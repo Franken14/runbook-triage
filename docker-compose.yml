@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: incident-runbook-fastapi
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=production
+      - LOG_LEVEL=info
+      - DATABASE_URL=postgresql://incident_admin:secret_runbook_pass@postgres:5432/incident_db
+      - REDIS_URL=redis://redis:6379/0
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-mock-key}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - DEDUPLICATION_WINDOW_SECONDS=60
+      - REQUIRE_APPROVAL_MUTATING_ACTIONS=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/workspace/app
+    networks:
+      - incident-net
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: incident-runbook-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: incident_admin
+      POSTGRES_PASSWORD: secret_runbook_pass
+      POSTGRES_DB: incident_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./app/retrieval/schema.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U incident_admin -d incident_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - incident-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: incident-runbook-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - incident-net
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  incident-net:
+    driver: bridge
