@@ -1,0 +1,715 @@
+[
+  {
+    "scenario_id": "SCN-001",
+    "name": "Kubernetes Pod OOMKilled CrashLoop",
+    "service": "order-processor",
+    "alert_payload": {
+      "service": "order-processor",
+      "alert_name": "PodCrashLooping",
+      "severity": "CRITICAL",
+      "summary": "Container order-worker terminated with exit code 137 (OOMKilled)",
+      "description": "Pod order-processor-7b6c5-2x9v1 is crashing repeatedly. Memory limit 512Mi exceeded during bulk order processing.",
+      "pod": "order-processor-7b6c5-2x9v1"
+    },
+    "ground_truth_runbook": {
+      "id": "RB-K8S-001",
+      "title": "Remediating Pod OOMKilled CrashLoopBackOff",
+      "service": "order-processor",
+      "severity": "CRITICAL",
+      "symptoms": "Container termination exit code 137, OOMKilled, memory cgroup limit breach",
+      "root_causes": ["Memory leak in batch processing worker", "Bursty workload exceeding pod memory limits"],
+      "diagnostic_steps": [
+        {"tool": "fetch_service_logs", "params": {"service": "order-processor", "lines": 100, "filter_term": "Out of Memory"}},
+        {"tool": "check_k8s_pod_status", "params": {"namespace": "default", "selector": "order-processor"}}
+      ],
+      "remediation_steps": [
+        {"tool": "scale_service_replicas", "params": {"namespace": "default", "deployment_name": "order-processor", "target_replicas": 4}},
+        {"tool": "restart_pod_deployment", "params": {"namespace": "default", "deployment_name": "order-processor"}}
+      ],
+      "risk_level": "MEDIUM",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-002",
+    "name": "PostgreSQL Connection Pool Exhaustion",
+    "service": "payment-gateway",
+    "alert_payload": {
+      "service": "payment-gateway",
+      "alert_name": "PostgresPoolExhausted",
+      "severity": "CRITICAL",
+      "summary": "Postgres connection pool exhausted (max=100, active=100, queue=45)",
+      "description": "Payment authorization timeouts surging due to database client acquisition starvation.",
+      "host": "db-primary.internal"
+    },
+    "ground_truth_runbook": {
+      "id": "RB-DB-002",
+      "title": "PostgreSQL Connection Pool Saturation and Client Starvation",
+      "service": "payment-gateway",
+      "severity": "CRITICAL",
+      "symptoms": "Postgres pool max connections reached, active connection count 100%, wait queue backlog",
+      "root_causes": ["Long running unindexed transaction locks", "Connection leak in payment settlement thread pool"],
+      "diagnostic_steps": [
+        {"tool": "check_db_connection_pool", "params": {"database_name": "payment_db"}},
+        {"tool": "fetch_service_logs", "params": {"service": "payment-gateway", "lines": 50, "filter_term": "connection pool"}}
+      ],
+      "remediation_steps": [
+        {"tool": "restart_pod_deployment", "params": {"namespace": "payments", "deployment_name": "payment-gateway"}}
+      ],
+      "risk_level": "HIGH",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-003",
+    "name": "Redis Cache Memory Eviction Thundering Herd",
+    "service": "catalog-api",
+    "alert_payload": {
+      "service": "catalog-api",
+      "alert_name": "RedisHighEvictionRate",
+      "severity": "HIGH",
+      "summary": "Redis cache eviction rate spiked 500% causing downstream database thundering herd",
+      "description": "Cache hits dropped to 12%. Primary PostgreSQL database CPU spiked to 98% under direct reads."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-CACHE-003",
+      "title": "Redis Cache Eviction Surge and Thundering Herd Mitigation",
+      "service": "catalog-api",
+      "severity": "HIGH",
+      "symptoms": "Redis memory maxmemory reached, high eviction rate, drop in cache hit ratio, database read spike",
+      "root_causes": ["Unbounded cache key generation without TTL", "Poison cache entries triggering cache churn"],
+      "diagnostic_steps": [
+        {"tool": "query_prometheus_metrics", "params": {"promql_query": "rate(redis_evicted_keys_total[5m])"}},
+        {"tool": "fetch_service_logs", "params": {"service": "catalog-api", "lines": 50}}
+      ],
+      "remediation_steps": [
+        {"tool": "flush_redis_cache_key", "params": {"pattern": "catalog:temp:*"}}
+      ],
+      "risk_level": "HIGH",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-004",
+    "name": "Faulty Canary Deployment 5xx Surge",
+    "service": "auth-service",
+    "alert_payload": {
+      "service": "auth-service",
+      "alert_name": "CanaryHttp5xxSpike",
+      "severity": "CRITICAL",
+      "summary": "Canary v2.4.1 error rate exceeded 15% (threshold: 1%)",
+      "description": "JWT verification failing on new schema migration in canary rollout."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-DEPLOY-004",
+      "title": "Canary Rollout Failure and Automated Traffic Rollback",
+      "service": "auth-service",
+      "severity": "CRITICAL",
+      "symptoms": "Canary release HTTP 500 error spike, auth token validation failure, regression in new release",
+      "root_causes": ["Backward incompatible JWT key format in v2.4.1", "Missing environment secret on canary pod"],
+      "diagnostic_steps": [
+        {"tool": "fetch_service_logs", "params": {"service": "auth-service", "lines": 80, "filter_term": "JWT"}},
+        {"tool": "query_prometheus_metrics", "params": {"promql_query": "sum(rate(http_requests_total{status=~'5..'}[2m]))"}}
+      ],
+      "remediation_steps": [
+        {"tool": "rollback_canary_deployment", "params": {"service": "auth-service", "target_revision": "v2.4.0"}}
+      ],
+      "risk_level": "CRITICAL",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-005",
+    "name": "Kafka Consumer Lag Spike",
+    "service": "notification-dispatcher",
+    "alert_payload": {
+      "service": "notification-dispatcher",
+      "alert_name": "KafkaConsumerLagHigh",
+      "severity": "HIGH",
+      "summary": "Consumer lag on topic 'user-emails' surpassed 50,000 messages",
+      "description": "Delivery delay of transaction emails currently at 18 minutes."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-QUEUE-005",
+      "title": "Kafka Consumer Partition Lag Recovery",
+      "service": "notification-dispatcher",
+      "severity": "HIGH",
+      "symptoms": "Kafka consumer lag elevation, slow partition consumption, backpressure in async messaging",
+      "root_causes": ["Downstream email provider rate limit throttling", "Insufficient worker pod concurrency"],
+      "diagnostic_steps": [
+        {"tool": "query_prometheus_metrics", "params": {"promql_query": "kafka_consumergroup_lag{topic='user-emails'}"}},
+        {"tool": "fetch_service_logs", "params": {"service": "notification-dispatcher", "lines": 50}}
+      ],
+      "remediation_steps": [
+        {"tool": "scale_service_replicas", "params": {"namespace": "default", "deployment_name": "notification-dispatcher", "target_replicas": 8}}
+      ],
+      "risk_level": "MEDIUM",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-006",
+    "name": "Ingress Rate Limiting DDOS Shield",
+    "service": "api-gateway",
+    "alert_payload": {
+      "service": "api-gateway",
+      "alert_name": "InboundTrafficSurge",
+      "severity": "HIGH",
+      "summary": "Inbound HTTP request rate exceeded 400% of baseline",
+      "description": "Suspicious scraping pattern hitting public search endpoints."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-NET-006",
+      "title": "API Gateway Ingress Surge and Edge Rate Limiting",
+      "service": "api-gateway",
+      "severity": "HIGH",
+      "symptoms": "RPS spike, edge bandwidth saturation, potential scraping bot traffic",
+      "root_causes": ["Distributed unauthenticated scrape traffic", "Missing edge IP throttle"],
+      "diagnostic_steps": [
+        {"tool": "query_prometheus_metrics", "params": {"promql_query": "sum(rate(nginx_ingress_controller_requests[1m]))"}},
+        {"tool": "fetch_service_logs", "params": {"service": "api-gateway", "lines": 50}}
+      ],
+      "remediation_steps": [
+        {"tool": "scale_service_replicas", "params": {"namespace": "ingress", "deployment_name": "api-gateway", "target_replicas": 12}}
+      ],
+      "risk_level": "MEDIUM",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-007",
+    "name": "Database Deadlock Saturation",
+    "service": "inventory-service",
+    "alert_payload": {
+      "service": "inventory-service",
+      "alert_name": "DatabaseDeadlockDetected",
+      "severity": "HIGH",
+      "summary": "PostgreSQL report: 42 deadlocks per minute detected on stock_items table",
+      "description": "Concurrent checkout transactions acquiring inventory row locks in conflicting order."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-DB-007",
+      "title": "Inventory Database Deadlock Resolution",
+      "service": "inventory-service",
+      "severity": "HIGH",
+      "symptoms": "Postgres deadlock graph detected, transaction rollbacks surging, slow locks on stock_items",
+      "root_causes": ["Reverse locking order in multi-item reservations", "Missing advisory lock synchronization"],
+      "diagnostic_steps": [
+        {"tool": "check_db_connection_pool", "params": {"database_name": "inventory_db"}},
+        {"tool": "fetch_service_logs", "params": {"service": "inventory-service", "lines": 50, "filter_term": "deadlock"}}
+      ],
+      "remediation_steps": [
+        {"tool": "restart_pod_deployment", "params": {"namespace": "default", "deployment_name": "inventory-service"}}
+      ],
+      "risk_level": "MEDIUM",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-008",
+    "name": "Elasticsearch High JVM Heap Pressure",
+    "service": "logging-pipeline",
+    "alert_payload": {
+      "service": "logging-pipeline",
+      "alert_name": "ESJVMHeapPressureHigh",
+      "severity": "HIGH",
+      "summary": "Elasticsearch JVM GC pause > 12s, heap usage at 94%",
+      "description": "Logstash ingestion buffers filling up due to slow Elasticsearch indexing."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-SEARCH-008",
+      "title": "Elasticsearch JVM Heap Pressure and Garbage Collection Saturation",
+      "service": "logging-pipeline",
+      "severity": "HIGH",
+      "symptoms": "JVM heap > 90%, frequent Stop-The-World garbage collection pauses, search thread pool rejection",
+      "root_causes": ["Heavy wildcard aggregation queries", "Oversized shard count on data nodes"],
+      "diagnostic_steps": [
+        {"tool": "query_prometheus_metrics", "params": {"promql_query": "jvm_memory_used_bytes{area='heap'}"}},
+        {"tool": "fetch_service_logs", "params": {"service": "logging-pipeline", "lines": 50}}
+      ],
+      "remediation_steps": [
+        {"tool": "restart_pod_deployment", "params": {"namespace": "logging", "deployment_name": "logging-pipeline"}}
+      ],
+      "risk_level": "MEDIUM",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-009",
+    "name": "DNS Resolution Timeout Internal Cluster",
+    "service": "checkout-service",
+    "alert_payload": {
+      "service": "checkout-service",
+      "alert_name": "CoreDNSLookupTimeouts",
+      "severity": "HIGH",
+      "summary": "CoreDNS query latency > 500ms; getaddrinfo failing across worker nodes",
+      "description": "Checkout service unable to resolve shipping-service.default.svc.cluster.local."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-DNS-009",
+      "title": "CoreDNS Query Degradation and Resolution Timeout Runbook",
+      "service": "checkout-service",
+      "severity": "HIGH",
+      "symptoms": "DNS timeout, getaddrinfo failure, CoreDNS 5-second timeout on ndots 5 lookups",
+      "root_causes": ["CoreDNS upstream UDP packet loss", "DNS cache exhaustion on worker nodes"],
+      "diagnostic_steps": [
+        {"tool": "check_k8s_pod_status", "params": {"namespace": "kube-system", "selector": "coredns"}},
+        {"tool": "fetch_service_logs", "params": {"service": "checkout-service", "lines": 50, "filter_term": "lookup"}}
+      ],
+      "remediation_steps": [
+        {"tool": "scale_service_replicas", "params": {"namespace": "kube-system", "deployment_name": "coredns", "target_replicas": 6}}
+      ],
+      "risk_level": "MEDIUM",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-010",
+    "name": "TLS Certificate Near Expiration",
+    "service": "customer-portal",
+    "alert_payload": {
+      "service": "customer-portal",
+      "alert_name": "TLSCertificateExpiringSoon",
+      "severity": "MEDIUM",
+      "summary": "SSL/TLS cert for app.example.com expires in 48 hours",
+      "description": "Cert-manager ACME challenge failed on HTTP-01 ingress path."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-SEC-010",
+      "title": "Automated SSL/TLS Certificate Renewal and Ingress Binding",
+      "service": "customer-portal",
+      "severity": "MEDIUM",
+      "symptoms": "Certificate expiration alert < 72h, ACME challenge failure, TLS handshake warning",
+      "root_causes": ["Blocked HTTP-01 challenge ingress route", "Let's Encrypt rate limit on domain"],
+      "diagnostic_steps": [
+        {"tool": "fetch_service_logs", "params": {"service": "customer-portal", "lines": 50, "filter_term": "cert"}}
+      ],
+      "remediation_steps": [
+        {"tool": "restart_pod_deployment", "params": {"namespace": "cert-manager", "deployment_name": "cert-manager"}}
+      ],
+      "risk_level": "LOW",
+      "requires_approval": false
+    }
+  },
+  {
+    "scenario_id": "SCN-011",
+    "name": "High CPU Steal in Cloud Virtual Machine",
+    "service": "analytics-node",
+    "alert_payload": {
+      "service": "analytics-node",
+      "alert_name": "HostCpuStealHigh",
+      "severity": "MEDIUM",
+      "summary": "CPU steal percentage exceeded 35% on hypervisor instance",
+      "description": "Noisy neighbor on cloud host degrading compute throughput."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-INFRA-011",
+      "title": "Hypervisor CPU Steal and Node Evacuation",
+      "service": "analytics-node",
+      "severity": "MEDIUM",
+      "symptoms": "High %steal on VM stats, sluggish thread execution without process CPU attribution",
+      "root_causes": ["Hypervisor oversubscription", "Hardware degradation on physical host"],
+      "diagnostic_steps": [
+        {"tool": "query_prometheus_metrics", "params": {"promql_query": "rate(node_cpu_seconds_total{mode='steal'}[5m])"}}
+      ],
+      "remediation_steps": [
+        {"tool": "restart_pod_deployment", "params": {"namespace": "analytics", "deployment_name": "analytics-node"}}
+      ],
+      "risk_level": "MEDIUM",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-012",
+    "name": "S3 Read Throughput 503 SlowDown Throttling",
+    "service": "asset-transcoder",
+    "alert_payload": {
+      "service": "asset-transcoder",
+      "alert_name": "S3SlowDown503Errors",
+      "severity": "HIGH",
+      "summary": "AWS S3 responding with 503 SlowDown to media transcode workers",
+      "description": "Exceeded 5,500 GET requests per second on single S3 prefix /raw-videos/2026/."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-STORE-012",
+      "title": "S3 Prefix Partitioning and Request Throttling Mitigation",
+      "service": "asset-transcoder",
+      "severity": "HIGH",
+      "symptoms": "HTTP 503 SlowDown, S3 read throughput limits exceeded, video pipeline stall",
+      "root_causes": ["Single S3 partition key prefix hotspot", "Lack of exponential jitter backoff in worker SDK"],
+      "diagnostic_steps": [
+        {"tool": "fetch_service_logs", "params": {"service": "asset-transcoder", "lines": 60, "filter_term": "SlowDown"}}
+      ],
+      "remediation_steps": [
+        {"tool": "scale_service_replicas", "params": {"namespace": "media", "deployment_name": "asset-transcoder", "target_replicas": 2}}
+      ],
+      "risk_level": "LOW",
+      "requires_approval": false
+    }
+  },
+  {
+    "scenario_id": "SCN-013",
+    "name": "gRPC Channel Connection Drops",
+    "service": "fraud-detector",
+    "alert_payload": {
+      "service": "fraud-detector",
+      "alert_name": "GrpcUnavailableErrorSpike",
+      "severity": "HIGH",
+      "summary": "gRPC UNAVAILABLE status code spike to 25% between fraud and payment service",
+      "description": "Keepalive ping timeout causing frequent TCP resets."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-RPC-013",
+      "title": "gRPC Channel Health and Keepalive Reset Runbook",
+      "service": "fraud-detector",
+      "severity": "HIGH",
+      "symptoms": "gRPC UNAVAILABLE code 14, TCP RST packets, connection reset by peer during RPC call",
+      "root_causes": ["Mismatched keepalive client ping interval vs server MAX_PINGS_WITHOUT_DATA", "Envoy proxy idle timeout"],
+      "diagnostic_steps": [
+        {"tool": "fetch_service_logs", "params": {"service": "fraud-detector", "lines": 50, "filter_term": "UNAVAILABLE"}}
+      ],
+      "remediation_steps": [
+        {"tool": "restart_pod_deployment", "params": {"namespace": "fraud", "deployment_name": "fraud-detector"}}
+      ],
+      "risk_level": "MEDIUM",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-014",
+    "name": "NFS Mount Stale File Handle",
+    "service": "document-archiver",
+    "alert_payload": {
+      "service": "document-archiver",
+      "alert_name": "StaleNFSFileHandle",
+      "severity": "HIGH",
+      "summary": "IO error: ESTALE Stale file handle on /mnt/shared/docs",
+      "description": "Storage server rebooted; client mounts failed to re-acquire file handles."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-FS-014",
+      "title": "Stale NFS File Handle Recovery and Remount",
+      "service": "document-archiver",
+      "severity": "HIGH",
+      "symptoms": "POSIX error ESTALE, input/output error on shared volume path",
+      "root_causes": ["NFS server server-side inode change after failover", "Broken persistent volume claim lease"],
+      "diagnostic_steps": [
+        {"tool": "check_k8s_pod_status", "params": {"namespace": "storage", "selector": "document-archiver"}}
+      ],
+      "remediation_steps": [
+        {"tool": "restart_pod_deployment", "params": {"namespace": "storage", "deployment_name": "document-archiver"}}
+      ],
+      "risk_level": "MEDIUM",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-015",
+    "name": "RabbitMQ Unacknowledged Message Saturation",
+    "service": "billing-pipeline",
+    "alert_payload": {
+      "service": "billing-pipeline",
+      "alert_name": "RabbitMQUnackedQueueFull",
+      "severity": "CRITICAL",
+      "summary": "Queue 'invoice-generation' has 30,000 unacknowledged messages",
+      "description": "Consumers hanging on third-party PDF rendering API."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-MOM-015",
+      "title": "RabbitMQ Unacknowledged Message Drain and Worker Recalibration",
+      "service": "billing-pipeline",
+      "severity": "CRITICAL",
+      "symptoms": "RabbitMQ unacked message count runaway, memory high watermark alert, consumer prefetch saturation",
+      "root_causes": ["Blocked socket read in worker thread without timeout", "Prefetch count set too high (1000)"],
+      "diagnostic_steps": [
+        {"tool": "query_prometheus_metrics", "params": {"promql_query": "rabbitmq_queue_messages_unacknowledged{queue='invoice-generation'}"}}
+      ],
+      "remediation_steps": [
+        {"tool": "restart_pod_deployment", "params": {"namespace": "billing", "deployment_name": "billing-pipeline"}}
+      ],
+      "risk_level": "HIGH",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-016",
+    "name": "MongoDB Replica Set Election Cascade",
+    "service": "user-profile-svc",
+    "alert_payload": {
+      "service": "user-profile-svc",
+      "alert_name": "MongoReplicaSetNoPrimary",
+      "severity": "CRITICAL",
+      "summary": "No primary found in MongoDB replica set rs0",
+      "description": "Network partition between availability zones triggered split vote."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-NOSQL-016",
+      "title": "MongoDB Replica Set Election Recovery and Primary Stabilization",
+      "service": "user-profile-svc",
+      "severity": "CRITICAL",
+      "symptoms": "MongoNotWritablePrimaryException, replica set has no primary node, heartbeat timeout",
+      "root_causes": ["Inter-AZ latency spike causing election timeout", "Clock drift between replica nodes"],
+      "diagnostic_steps": [
+        {"tool": "fetch_service_logs", "params": {"service": "user-profile-svc", "lines": 50, "filter_term": "replica"}}
+      ],
+      "remediation_steps": [
+        {"tool": "restart_pod_deployment", "params": {"namespace": "default", "deployment_name": "user-profile-svc"}}
+      ],
+      "risk_level": "HIGH",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-017",
+    "name": "Node.js Event Loop Delay Breach",
+    "service": "bff-web",
+    "alert_payload": {
+      "service": "bff-web",
+      "alert_name": "NodeEventLoopLagHigh",
+      "severity": "HIGH",
+      "summary": "Node.js Event Loop Lag P99 > 2800ms",
+      "description": "Synchronous regex evaluation blocking single-threaded event loop."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-NODE-017",
+      "title": "Node.js Event Loop Latency and Synchronous ReDoS Mitigation",
+      "service": "bff-web",
+      "severity": "HIGH",
+      "symptoms": "Node event loop delay > 1000ms, request timeout 504, zero CPU idle but low multi-core efficiency",
+      "root_causes": ["Catastrophic regex backtracking on user search input", "Unthreaded JSON.parse on 50MB payload"],
+      "diagnostic_steps": [
+        {"tool": "fetch_service_logs", "params": {"service": "bff-web", "lines": 50}}
+      ],
+      "remediation_steps": [
+        {"tool": "scale_service_replicas", "params": {"namespace": "frontend", "deployment_name": "bff-web", "target_replicas": 10}},
+        {"tool": "restart_pod_deployment", "params": {"namespace": "frontend", "deployment_name": "bff-web"}}
+      ],
+      "risk_level": "MEDIUM",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-018",
+    "name": "Zookeeper Quorum Loss in Kafka Cluster",
+    "service": "kafka-infra",
+    "alert_payload": {
+      "service": "kafka-infra",
+      "alert_name": "ZookeeperNoQuorum",
+      "severity": "CRITICAL",
+      "summary": "Zookeeper leader lost, less than 2/3 ensemble nodes voting",
+      "description": "Disk write timeout on transaction log partition."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-ZK-018",
+      "title": "ZooKeeper Ensemble Quorum Recovery",
+      "service": "kafka-infra",
+      "severity": "CRITICAL",
+      "symptoms": "ZooKeeper quorum lost, leader election failed, Kafka metadata update locked",
+      "root_causes": ["Snapshot disk IOPS throttled on EBS volume", "Split-brain ensemble network drop"],
+      "diagnostic_steps": [
+        {"tool": "check_k8s_pod_status", "params": {"namespace": "kafka", "selector": "zookeeper"}}
+      ],
+      "remediation_steps": [
+        {"tool": "restart_pod_deployment", "params": {"namespace": "kafka", "deployment_name": "zookeeper"}}
+      ],
+      "risk_level": "CRITICAL",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-019",
+    "name": "Stale Webhook Retry Storm",
+    "service": "webhook-dispatcher",
+    "alert_payload": {
+      "service": "webhook-dispatcher",
+      "alert_name": "WebhookRetryQueueExplosion",
+      "severity": "HIGH",
+      "summary": "Outbound webhook queue backed up with 1.2M failed delivery retries",
+      "description": "Downstream partner SaaS endpoint returning 429 Too Many Requests."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-HOOK-019",
+      "title": "Outbound Webhook Retry Storm and Partner Throttling",
+      "service": "webhook-dispatcher",
+      "severity": "HIGH",
+      "symptoms": "Retry queue explosive growth, outbound HTTP 429 responses, thread pool starvation",
+      "root_causes": ["Missing circuit breaker on failing customer webhook URL", "Aggressive linear retry backoff"],
+      "diagnostic_steps": [
+        {"tool": "fetch_service_logs", "params": {"service": "webhook-dispatcher", "lines": 50, "filter_term": "429"}}
+      ],
+      "remediation_steps": [
+        {"tool": "scale_service_replicas", "params": {"namespace": "default", "deployment_name": "webhook-dispatcher", "target_replicas": 5}}
+      ],
+      "risk_level": "LOW",
+      "requires_approval": false
+    }
+  },
+  {
+    "scenario_id": "SCN-020",
+    "name": "Kubernetes Inode Exhaustion on Node Root Volume",
+    "service": "k8s-node-worker-4",
+    "alert_payload": {
+      "service": "k8s-node-worker-4",
+      "alert_name": "NodeDiskInodeExhausted",
+      "severity": "CRITICAL",
+      "summary": "Node worker-4 root filesystem has 0 free inodes (100% full)",
+      "description": "Pods cannot write emptyDir volumes or initialize sockets."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-OS-020",
+      "title": "Linux Node Inode Saturation and Container Log Eviction",
+      "service": "k8s-node-worker-4",
+      "severity": "CRITICAL",
+      "symptoms": "No space left on device (inodes 100%), failed container sandbox creation, dockershim eviction",
+      "root_causes": ["Millions of unrotated tiny JSON log files in /var/log/pods", "Dangling unused container layers"],
+      "diagnostic_steps": [
+        {"tool": "check_k8s_pod_status", "params": {"namespace": "default", "selector": "worker-4"}}
+      ],
+      "remediation_steps": [
+        {"tool": "restart_pod_deployment", "params": {"namespace": "kube-system", "deployment_name": "node-cleaner"}}
+      ],
+      "risk_level": "HIGH",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-021",
+    "name": "Nginx Upstream Timed Out (110: Connection timed out)",
+    "service": "edge-proxy",
+    "alert_payload": {
+      "service": "edge-proxy",
+      "alert_name": "NginxUpstreamTimeoutSpike",
+      "severity": "HIGH",
+      "summary": "Nginx 504 Gateway Time-out rate at 12% across edge proxies",
+      "description": "Upstream microservices taking longer than proxy_read_timeout (60s)."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-EDGE-021",
+      "title": "Reverse Proxy Upstream Timeout Runbook",
+      "service": "edge-proxy",
+      "severity": "HIGH",
+      "symptoms": "504 Gateway Timeout, upstream timed out (110: Connection timed out) while reading response header",
+      "root_causes": ["Backend service thread pool deadlock", "Network interface packet drops on proxy pod"],
+      "diagnostic_steps": [
+        {"tool": "fetch_service_logs", "params": {"service": "edge-proxy", "lines": 50, "filter_term": "timeout"}}
+      ],
+      "remediation_steps": [
+        {"tool": "restart_pod_deployment", "params": {"namespace": "edge", "deployment_name": "edge-proxy"}}
+      ],
+      "risk_level": "MEDIUM",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-022",
+    "name": "Database Read Replica Replication Lag",
+    "service": "reporting-analytics",
+    "alert_payload": {
+      "service": "reporting-analytics",
+      "alert_name": "PostgresReplicationLagHigh",
+      "severity": "HIGH",
+      "summary": "Postgres read replica lag exceeded 3,600 seconds",
+      "description": "Financial reports returning outdated figures due to WAL replay block."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-DB-022",
+      "title": "PostgreSQL WAL Replication Lag Recovery",
+      "service": "reporting-analytics",
+      "severity": "HIGH",
+      "symptoms": "pg_stat_replication replay_lag > 1 hour, WAL sender buffer overflow, stale query results",
+      "root_causes": ["Long running exclusive lock query on read replica blocking recovery replay", "Disk IO bottleneck on replica"],
+      "diagnostic_steps": [
+        {"tool": "check_db_connection_pool", "params": {"database_name": "reporting_db"}}
+      ],
+      "remediation_steps": [
+        {"tool": "restart_pod_deployment", "params": {"namespace": "analytics", "deployment_name": "reporting-analytics"}}
+      ],
+      "risk_level": "MEDIUM",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-023",
+    "name": "JWT Private Key Rotation Desynchronization",
+    "service": "identity-provider",
+    "alert_payload": {
+      "service": "identity-provider",
+      "alert_name": "JwksSignatureVerificationFailure",
+      "severity": "CRITICAL",
+      "summary": "Signature verification failing for 100% of newly minted tokens",
+      "description": "KMS key rotation completed but JWKS public key endpoint cached old public key."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-AUTH-023",
+      "title": "JWKS Key Cache Invalidation and Rotation Alignment",
+      "service": "identity-provider",
+      "severity": "CRITICAL",
+      "symptoms": "JWT signature invalid, KID not found in JWKS, 401 Unauthorized wave across gateway",
+      "root_causes": ["Asymmetric rotation: private key rotated before public JWKS TTL expired", "CDN caching old JWKS response"],
+      "diagnostic_steps": [
+        {"tool": "fetch_service_logs", "params": {"service": "identity-provider", "lines": 50, "filter_term": "signature"}}
+      ],
+      "remediation_steps": [
+        {"tool": "flush_redis_cache_key", "params": {"pattern": "jwks:keys:*"}}
+      ],
+      "risk_level": "HIGH",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-024",
+    "name": "Elasticsearch Unassigned Shards Cluster Red",
+    "service": "metrics-search",
+    "alert_payload": {
+      "service": "metrics-search",
+      "alert_name": "ElasticClusterStatusRed",
+      "severity": "CRITICAL",
+      "summary": "Cluster health RED: 14 primary shards unassigned",
+      "description": "Data node crashed, primary shards unrecoverable without reroute allocation."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-ES-024",
+      "title": "Elasticsearch Unassigned Shards and Cluster Red Recovery",
+      "service": "metrics-search",
+      "severity": "CRITICAL",
+      "symptoms": "Cluster status RED, unassigned primary shards, search index read-only block",
+      "root_causes": ["Corrupted translog on evicted node", "Disk watermark flood_stage_watermark breached"],
+      "diagnostic_steps": [
+        {"tool": "query_prometheus_metrics", "params": {"promql_query": "elasticsearch_cluster_health_status{color='red'}"}}
+      ],
+      "remediation_steps": [
+        {"tool": "restart_pod_deployment", "params": {"namespace": "elastic", "deployment_name": "metrics-search"}}
+      ],
+      "risk_level": "CRITICAL",
+      "requires_approval": true
+    }
+  },
+  {
+    "scenario_id": "SCN-025",
+    "name": "Worker Node Memory Pressure Eviction Storm",
+    "service": "k8s-cluster",
+    "alert_payload": {
+      "service": "k8s-cluster",
+      "alert_name": "NodeMemoryPressureEvictions",
+      "severity": "CRITICAL",
+      "summary": "Kubelet applying eviction threshold: 18 non-critical pods evicted",
+      "description": "System memory available < 100Mi on node ip-10-0-4-12.ec2.internal."
+    },
+    "ground_truth_runbook": {
+      "id": "RB-K8S-025",
+      "title": "Kubelet Node Memory Pressure and Eviction Runbook",
+      "service": "k8s-cluster",
+      "severity": "CRITICAL",
+      "symptoms": "The node was low on memory: [MemoryPressure], PodEvicted, BestEffort pods killed",
+      "root_causes": ["Kernel page cache unevictable due to anonymous mmap", "Untracked container host memory leak"],
+      "diagnostic_steps": [
+        {"tool": "check_k8s_pod_status", "params": {"namespace": "default", "selector": "app"}}
+      ],
+      "remediation_steps": [
+        {"tool": "scale_service_replicas", "params": {"namespace": "default", "deployment_name": "batch-worker", "target_replicas": 1}}
+      ],
+      "risk_level": "MEDIUM",
+      "requires_approval": true
+    }
+  }
+]
