@@ -1,5 +1,5 @@
 import logging
-from typing import Optional
+from typing import Optional, Any
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from app.agent.state import IncidentState
